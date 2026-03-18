@@ -181,9 +181,15 @@ function buildQuery(p) {
     if (mapped) $and.push({ 'params.Срок замены': mapped });
   }
 
-  // Цвет
+  // Цвет — нормализуем русское прилагательное к основе:
+  // "карие" → "кари", "голубые" → "голуб", "зеленые" → "зелен"
   if (p.color) {
-    $and.push({ 'params.Цвет': { $regex: p.color, $options: 'i' } });
+    const colorStem = p.color
+      .replace(/[иы]е$/, '')  // карие → кари, голубые → голуб
+      .replace(/ой$/, '')     // голубой → голуб
+      .replace(/ий$/, '');    // карий → кари
+    const colorRegex = colorStem.length >= 3 ? colorStem : p.color;
+    $and.push({ 'params.Цвет': { $regex: colorRegex, $options: 'i' } });
   }
 
   // Название модели / бренд — text search
