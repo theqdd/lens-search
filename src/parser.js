@@ -1,9 +1,6 @@
 /**
  * Умный парсер запросов покупателей.
- *
- * Поддерживает два провайдера (выбирается через PARSER_PROVIDER в .env):
- *   - hydra      — HydraAI (OpenAI-совместимый), модель claude-sonnet-4  [по умолчанию]
- *   - anthropic  — Anthropic SDK, модель claude-haiku-4-5
+ * Использует Anthropic SDK (claude-haiku-4-5).
  *
  * Примеры входящих запросов:
  *   "Помогите найти линзы оазис мультифокальные на -2.5"
@@ -14,11 +11,11 @@ import Anthropic from '@anthropic-ai/sdk';
 
 // ─── Константы ──────────────────────────────────────────────────────────────
 
-const HYDRA_BASE_URL = 'https://api.hydraai.ru/v1';
-const HYDRA_MODEL    = 'claude-sonnet-4';
 const ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001';
 
 const SYSTEM_PROMPT = `Ты — эксперт по контактным линзам. Распарси запрос покупателя и извлеки параметры для поиска в базе данных.
+
+Если запрос НЕ связан с поиском контактных линз (вопрос о погоде, приветствие, посторонняя тема) — верни {"off_topic": true} и ничего больше.
 
 Верни ТОЛЬКО JSON объект без пояснений. Поля (все опциональные):
 - model_hint: ключевые слова названия модели (латиница, строчные, без бренда и параметров)
@@ -71,55 +68,58 @@ function extractJSON(text) {
   return JSON.parse(clean);
 }
 
-// ─── Провайдер: HydraAI (OpenAI-compatible) ─────────────────────────────────
+// ─── Клиенты провайдеров ──────────────────────────────────────────────────────
 
-async function parseWithHydra(text) {
-  const res = await fetch(`${HYDRA_BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.HYDRA_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: HYDRA_MODEL,
-      max_tokens: 256,
-      temperature: 0,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user',   content: text },
-      ],
-    }),
-    signal: AbortSignal.timeout(15000), // 15 сек таймаут
-  });
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`HydraAI error ${res.status}: ${body}`);
-  }
-
-  const data = await res.json();
-  return extractJSON(data.choices[0].message.content);
-}
-
-// ─── Провайдер: Anthropic SDK ────────────────────────────────────────────────
+const HYDRA_BASE_URL = 'https://api.hydraai.ru/v1';
+const HYDRA_MODEL    = 'claude-sonnet-4';
 
 let _anthropicClient = null;
 function getAnthropicClient() {
-  if (!_anthropicClient) {
-    _anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  }
+  if (!_anthropicClient) _anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   return _anthropicClient;
 }
 
-async function parseWithAnthropic(text) {
-  const client = getAnthropicClient();
-  const message = await client.messages.create({
-    model: ANTHROPIC_MODEL,
-    max_tokens: 256,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: text }],
-  });
-  return extractJSON(message.content[0].text);
+// ─── Follow-up prompt (с контекстом переписки) ───────────────────────────────
+
+const FOLLOWUP_SYSTEM = `Ты — ассистент менеджера магазина контактных линз.
+Менеджер изучает результаты поиска и задаёт уточняющий вопрос боту.
+Тебе дана история переписки и новый вопрос менеджера.
+
+Если вопрос НЕ связан с поиском линз (посторонняя тема, вопрос не по адресу) — верни {"off_topic": true} и ничего больше.
+
+Верни ТОЛЬКО JSON с параметрами поиска. Сохраняй параметры из предыдущего поиска если менеджер их не меняет явно.
+Поля (все опциональны):
+- model_hint, brand_hint, lens_type (sphere|toric|multifocal|colored)
+- power (+X.XX / -X.XX), cylinder (-X.XX), axis (0-180)
+- add (low|mid|high или +X.XX), color, bc, dia
+- replacement (daily|biweekly|monthly|quarterly)`;
+
+async function callAI(systemPrompt, messages) {
+  // Переключатель: PARSER_PROVIDER=hydra (по умолчанию) или anthropic
+  const useHydra = (process.env.PARSER_PROVIDER || 'hydra') !== 'anthropic';
+
+  try {
+    if (useHydra) {
+      const res = await fetch(`${HYDRA_BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.HYDRA_API_KEY}` },
+        body: JSON.stringify({ model: HYDRA_MODEL, max_tokens: 256, temperature: 0,
+          messages: [{ role: 'system', content: systemPrompt }, ...messages] }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) throw new Error(`HydraAI ${res.status}: ${await res.text()}`);
+      const data = await res.json();
+      return extractJSON(data.choices[0].message.content);
+    } else {
+      const msg = await getAnthropicClient().messages.create({
+        model: ANTHROPIC_MODEL, max_tokens: 256, system: systemPrompt, messages,
+      });
+      return extractJSON(msg.content[0].text);
+    }
+  } catch (err) {
+    console.error(`[parser] AI call failed: ${err.message}`);
+    return {};
+  }
 }
 
 // ─── Публичный API ───────────────────────────────────────────────────────────
@@ -130,26 +130,18 @@ export async function parseQuery(text) {
   const cached = cacheGet(key);
   if (cached) return cached;
 
-  const provider = process.env.PARSER_PROVIDER || 'hydra';
-
-  let parsed = {};
-  try {
-    parsed = provider === 'anthropic'
-      ? await parseWithAnthropic(text)
-      : await parseWithHydra(text);
-  } catch (err) {
-    // Если основной провайдер упал — пробуем запасной
-    console.error(`[parser] ${provider} failed: ${err.message}, trying fallback`);
-    try {
-      parsed = provider === 'anthropic'
-        ? await parseWithHydra(text)
-        : await parseWithAnthropic(text);
-    } catch (fallbackErr) {
-      console.error(`[parser] fallback also failed: ${fallbackErr.message}`);
-      parsed = {};
-    }
-  }
-
+  const parsed = await callAI(SYSTEM_PROMPT, [{ role: 'user', content: text }]);
   cacheSet(key, parsed);
   return parsed;
+}
+
+/**
+ * Парсит уточняющий вопрос менеджера с учётом контекста переписки.
+ * @param {Array<{role:'user'|'assistant', content:string}>} history — история чата
+ * @param {string} followUpText — новый вопрос менеджера
+ * @returns {Promise<object>} — параметры поиска
+ */
+export async function parseFollowUp(history, followUpText) {
+  const messages = [...history, { role: 'user', content: followUpText }];
+  return callAI(FOLLOWUP_SYSTEM, messages);
 }

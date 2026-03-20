@@ -11,6 +11,11 @@ const productSchema = new mongoose.Schema(
     category_name: { type: String },
     manufacturer:  { type: String },
     barcode:       { type: String },
+    wb: {
+      ip:       [String],
+      ooo:      [String],
+      viplinza: [String],
+    },
     params: {
       'Оптическая сила':           mongoose.Schema.Types.Mixed,
       'Оптическая сила цилиндра':  mongoose.Schema.Types.Mixed,

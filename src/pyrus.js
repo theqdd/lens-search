@@ -12,7 +12,7 @@
  *   5. Отправить результат комментарием в задачу
  */
 
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 
 const AUTH_URL = 'https://accounts.pyrus.com/api/v4/auth';
 const API_BASE  = 'https://api.pyrus.com/v4';
@@ -81,12 +81,14 @@ async function apiRequest(method, path, body) {
 }
 
 /**
- * Публикует текстовый комментарий в задачу Pyrus.
+ * Публикует комментарий в задачу Pyrus.
  * @param {number|string} taskId
- * @param {string} text
+ * @param {string} text  — plain text или HTML (если html=true)
+ * @param {{ html?: boolean }} opts
  */
-export async function postComment(taskId, text) {
-  return apiRequest('POST', `/tasks/${taskId}/comments`, { text });
+export async function postComment(taskId, text, { html = false } = {}) {
+  const body = html ? { formatted_text: text } : { text };
+  return apiRequest('POST', `/tasks/${taskId}/comments`, body);
 }
 
 // ─── Верификация подписи вебхука ─────────────────────────────────────────────
@@ -100,7 +102,9 @@ export function verifyWebhookSignature(rawBody, signature) {
   const expected = createHmac('sha1', process.env.PYRUS_KEY)
     .update(rawBody)
     .digest('hex');
-  return expected === signature.toLowerCase();
+  const sig = signature.toLowerCase();
+  if (expected.length !== sig.length) return false;
+  return timingSafeEqual(Buffer.from(expected), Buffer.from(sig));
 }
 
 // ─── Парсинг полей из вебхука ─────────────────────────────────────────────────

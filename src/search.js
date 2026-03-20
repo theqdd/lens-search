@@ -204,7 +204,7 @@ function buildQuery(p) {
 // ─── Публичная функция поиска ─────────────────────────────────────────────────
 
 const PROJECTION = {
-  _id: 1, name: 1, model: 1, brand: 1, barcode: 1,
+  _id: 1, name: 1, model: 1, brand: 1, barcode: 1, wb: 1,
   'params.Оптическая сила': 1,
   'params.Оптическая сила цилиндра': 1,
   'params.Ось линзы': 1,
