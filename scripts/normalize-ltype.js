@@ -28,7 +28,8 @@ function normalizeLtype(doc) {
   if (all.some(s => s.includes('астигмат')))    return 'toric';
   if (hasRealColor || all.some(s => s.includes('цветн') || s.includes('color'))) return 'colored';
   if (all.some(s => ['сфери', 'прозрачн', 'монофокал', 'стигматиче', 'бифокал', 'офисн'].some(k => s.includes(k)))) return 'sphere';
-  return 'other'; // diagnostics, glasses parts, solutions, etc.
+  if (t === 'растворы' || t === 'капли') return 'solution';
+  return 'other'; // glasses frames, diagnostics — will be skipped on import
 }
 
 async function main() {
