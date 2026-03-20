@@ -15,31 +15,80 @@ const ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001';
 
 const SYSTEM_PROMPT = `Ты — эксперт по контактным линзам. Распарси запрос покупателя и извлеки параметры для поиска в базе данных.
 
-Если запрос НЕ связан с поиском контактных линз (вопрос о погоде, приветствие, посторонняя тема) — верни {"off_topic": true} и ничего больше.
+Если запрос НЕ связан с поиском контактных линз — верни {"off_topic": true} и ничего больше.
 
-Верни ТОЛЬКО JSON объект без пояснений. Поля (все опциональные):
-- model_hint: ключевые слова названия модели (латиница, строчные, без бренда и параметров)
-- brand_hint: бренд строчными (acuvue, alcon, coopervision, bausch lomb, johnson и т.д.)
-- lens_type: тип линзы — одно из: sphere | toric | multifocal | colored
-- power: оптическая сила строго в формате "+X.XX" или "-X.XX", например "-2.50", "+0.25"
-- cylinder: цилиндр (торические) в формате "-X.XX" или "+X.XX", например "-1.25"
-- axis: ось (торические) — целое число от 0 до 180
-- add: аддидация (мультифокальные) — одно из: "low" | "mid" | "high" или числовое "+X.XX"
-- color: цвет для цветных линз (строка)
-- bc: базовая кривизна (число с точкой, например 8.6)
-- dia: диаметр (число с точкой, например 14.2)
-- replacement: период замены — одно из: daily | biweekly | monthly | quarterly
+Верни ТОЛЬКО JSON без пояснений. Все поля опциональны:
+- model_hint: ключевые слова модели (латиница, строчные, без бренда и цифровых параметров)
+- brand_hint: бренд строчными
+- lens_type: sphere | toric | multifocal | colored
+- power: оптическая сила "+X.XX" или "-X.XX"
+- cylinder: цилиндр "-X.XX" или "+X.XX"
+- axis: ось 0–180 (целое число)
+- add: аддидация "low" | "mid" | "high" или "+X.XX"
+- color: цвет линзы (строка)
+- bc: базовая кривизна (8.6)
+- dia: диаметр (14.2)
+- replacement: daily | biweekly | monthly | quarterly
 
-Правила нормализации:
-- Оптическая сила ВСЕГДА со знаком и двумя знаками после запятой: "-2.5" → "-2.50", "2.5" → "+2.50"
-- Если сила не упомянута — не добавляй поле power
-- Аддидация: низкая/слабая/low → "low", средняя/medium → "mid", высокая/high → "high"
-- Числовая аддидация ("+2.00", "2.5 дптр") → "+2.00" (со знаком, два знака)
-- Названия моделей: "оазис" → "oasys", "акувью/acuvue" → бренд acuvue, "тотал" → "total",
-  "эйр оптикс" → "air optix", "биофинити" → "biofinity", "дейли" → "dailies"
-- model_hint содержит только слова модели, бренд выноси в brand_hint
-- Для торических линз (астигматизм, астигматические, toric) ставь lens_type: "toric"
-- Для мультифокальных (мультифокал, для пресбиопии, для чтения) ставь lens_type: "multifocal"`;
+ПРАВИЛА:
+- power ВСЕГДА со знаком и 2 знаками: "3" → "+3.00", "минус 2.5" → "-2.50", "плюс 1" → "+1.00"
+- Если сила не упомянута явно — НЕ добавляй power
+- Если есть цилиндр или ось → lens_type: "toric" (даже если не сказано "астигматизм")
+- Если есть аддидация → lens_type: "multifocal"
+- model_hint: только модель, бренд всегда в brand_hint
+
+СИНОНИМЫ БРЕНДОВ:
+- acuvue: акувью, акювью, acquvue, johnson, джонсон, j&j
+- alcon: алкон, алькон
+- coopervision: купервижн, купер вижн, купер, coopervision
+- bausch lomb: баш и ломб, б+л, б&л, bausch, lomb, бауш, баш ломб, bl
+- interojo: интерожо
+- hema: хема
+- seed: сид
+- ocu soft: окусофт
+
+СИНОНИМЫ МОДЕЛЕЙ (→ латиница для model_hint):
+- оазис, oazis → oasys
+- тотал, тотал30 → total30
+- эйр оптикс, airoptix → air optix
+- биофинити, biofinity → biofinity
+- дейли, дайли → dailies
+- май дей, майдей → myday
+- фрешлук, фреш лук → freshlook
+- пюр вижн, пюревижн → purevision
+- кларити, клэрити → clariti
+- ультра (bausch) → ultra
+- биотру, биотrue → biotrue
+- софлинз → soflens
+- 1 дей мойст, 1-дей → 1-day acuvue moist
+- дефайн → acuvue define
+- оазис однодневные → oasys 1-day
+- дейли аквакомфорт → dailies aquacomfort
+- прокlear → proclear
+- аир оптикс аква → air optix aqua
+
+ПЕРИОД ЗАМЕНЫ:
+- однодневные, 1 день, 1-day, daily → daily
+- двухнедельные, 2 недели, biweekly → biweekly
+- месячные, на месяц, monthly, 30 дней → monthly
+- квартальные, на 3 месяца, quarterly → quarterly
+
+АДДИДАЦИЯ:
+- низкая/слабая/low, +0.75–+1.25 → "low"
+- средняя/medium/mid, +1.50–+1.75 → "mid"
+- высокая/strong/high, +2.00+ → "high"
+- числовая ("+2.00 D", "аддидация 2.5") → соответствующий уровень или само значение "+2.00"
+
+ПРИМЕРЫ СЛОЖНЫХ ЗАПРОСОВ:
+"оазис мультифокальные на -3 средняя аддидация" → {"brand_hint":"acuvue","model_hint":"oasys multifocal","lens_type":"multifocal","power":"-3.00","add":"mid"}
+"линзы для астигматизма ось 180 цилиндр 1.25 сила минус 2" → {"lens_type":"toric","axis":180,"cylinder":"-1.25","power":"-2.00"}
+"алкон дейли аквакомфорт плюс плюс 1" → {"brand_hint":"alcon","model_hint":"dailies aquacomfort plus","power":"+1.00","replacement":"daily"}
+"биофинити торик -4.5 цилиндр -0.75 ось 10" → {"brand_hint":"coopervision","model_hint":"biofinity toric","lens_type":"toric","power":"-4.50","cylinder":"-0.75","axis":10}
+"фрешлук карие двухнедельные" → {"brand_hint":"coopervision","model_hint":"freshlook","lens_type":"colored","color":"карие","replacement":"biweekly"}
+"б+л ультра -3" → {"brand_hint":"bausch lomb","model_hint":"ultra","power":"-3.00"}
+"купер кларити торик -1.75 ц -0.75 о 090" → {"brand_hint":"coopervision","model_hint":"clariti toric","lens_type":"toric","power":"-1.75","cylinder":"-0.75","axis":90}
+"линзы на плюс 2 для пресбиопии высокая аддидация" → {"lens_type":"multifocal","power":"+2.00","add":"high"}
+"зеленые однодневные цветные" → {"lens_type":"colored","color":"зеленые","replacement":"daily"}`;
 
 
 // ─── Кэш (простой LRU через Map) ────────────────────────────────────────────
@@ -82,17 +131,18 @@ function getAnthropicClient() {
 // ─── Follow-up prompt (с контекстом переписки) ───────────────────────────────
 
 const FOLLOWUP_SYSTEM = `Ты — ассистент менеджера магазина контактных линз.
-Менеджер изучает результаты поиска и задаёт уточняющий вопрос боту.
+Менеджер смотрит результаты поиска и уточняет или меняет запрос.
 Тебе дана история переписки и новый вопрос менеджера.
 
-Если вопрос НЕ связан с поиском линз (посторонняя тема, вопрос не по адресу) — верни {"off_topic": true} и ничего больше.
+Если вопрос НЕ связан с поиском линз — верни {"off_topic": true} и ничего больше.
 
-Верни ТОЛЬКО JSON с параметрами поиска. Сохраняй параметры из предыдущего поиска если менеджер их не меняет явно.
-Поля (все опциональны):
-- model_hint, brand_hint, lens_type (sphere|toric|multifocal|colored)
-- power (+X.XX / -X.XX), cylinder (-X.XX), axis (0-180)
-- add (low|mid|high или +X.XX), color, bc, dia
-- replacement (daily|biweekly|monthly|quarterly)`;
+Верни ТОЛЬКО JSON с параметрами поиска. Сохраняй параметры предыдущего поиска если менеджер их явно не меняет.
+Поля (все опциональны): model_hint, brand_hint, lens_type (sphere|toric|multifocal|colored),
+power (+X.XX/-X.XX), cylinder, axis (0-180), add (low|mid|high|+X.XX), color, bc, dia, replacement (daily|biweekly|monthly|quarterly).
+
+Синонимы брендов: акувью→acuvue, алкон→alcon, купервижн→coopervision, баш ломб/б+л→bausch lomb.
+Синонимы моделей: оазис→oasys, биофинити→biofinity, дейли→dailies, фрешлук→freshlook, кларити→clariti, ультра→ultra, май дей→myday.
+power ВСЕГДА со знаком и 2 знаками после запятой. Если есть цилиндр/ось → lens_type:"toric". Если аддидация → lens_type:"multifocal".`;
 
 async function callAI(systemPrompt, messages) {
   // Переключатель: PARSER_PROVIDER=hydra (по умолчанию) или anthropic

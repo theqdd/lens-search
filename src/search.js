@@ -93,33 +93,16 @@ function additionQuery(val) {
   return { $or: orClauses };
 }
 
-// Маппинг типов линз — проверяем три поля: type, category_name, params.Тип линз
-// Поле `type` — самое надёжное, остальные используются как fallback из-за
-// несогласованности исходных данных (напр. Oasys Multifocal имеет Тип линз="Прозрачные")
+// Маппинг типов линз — использует нормализованное поле ltype_norm
+// (заполняется скриптом scripts/normalize-ltype.js после каждого импорта).
+// Compound text index { ltype_norm: 1, name: 'text', ... } позволяет
+// MongoDB сканировать только документы нужного типа (~1K вместо 90K).
 const TYPE_FILTER = {
-  multifocal: { $or: [
-    { type: 'Мультифокальные' },
-    { category_name: 'Мультифокальные' },
-    { 'params.Тип линз': 'Мультифокальные' },
-  ]},
-  toric: { $or: [
-    { type: { $in: ['Астигматические', 'Астигматическая'] } },
-    { category_name: { $in: ['Астигматические', 'Астигматическая'] } },
-    { 'params.Тип линз': 'Астигматические' },
-  ]},
-  colored: { $or: [
-    { type: 'Цветные' },
-    { 'params.Тип линз': 'Цветные' },
-    { 'params.Цвет': { $ne: null, $nin: ['', '00', '0001', '0002'] } },
-  ]},
-  sphere: { $or: [
-    { type: { $in: ['Сферические', 'Прозрачные', 'Монофокальная', 'Стигматическая'] } },
-    { 'params.Тип линз': 'Прозрачные' },
-  ]},
-  spherical: { $or: [
-    { type: { $in: ['Сферические', 'Прозрачные', 'Монофокальная', 'Стигматическая'] } },
-    { 'params.Тип линз': 'Прозрачные' },
-  ]},
+  multifocal: { ltype_norm: 'multifocal' },
+  toric:      { ltype_norm: 'toric' },
+  colored:    { ltype_norm: 'colored' },
+  sphere:     { ltype_norm: 'sphere' },
+  spherical:  { ltype_norm: 'sphere' },
 };
 
 // Маппинг периодов замены
@@ -196,6 +179,10 @@ function buildQuery(p) {
   if (p.model_hint || p.brand_hint) {
     const terms = [p.model_hint, p.brand_hint].filter(Boolean).join(' ');
     $and.push({ $text: { $search: terms } });
+    // Без фильтра по типу — исключаем не-линзы (очки, диагностика, запчасти)
+    if (!typeFilter) {
+      $and.push({ ltype_norm: { $ne: 'other' } });
+    }
   }
 
   return $and.length > 0 ? { $and } : null;
@@ -217,12 +204,7 @@ const PROJECTION = {
   'params.Цвет': 1,
 };
 
-export async function searchProducts(parsedParams, limit = 20) {
-  const query = buildQuery(parsedParams);
-  if (!query) return [];
-
-  const hasText = parsedParams.model_hint || parsedParams.brand_hint;
-
+async function _runQuery(query, hasText, limit) {
   if (hasText) {
     return Product
       .find(query, { ...PROJECTION, score: { $meta: 'textScore' } })
@@ -230,6 +212,33 @@ export async function searchProducts(parsedParams, limit = 20) {
       .limit(limit)
       .lean();
   }
-
   return Product.find(query, PROJECTION).limit(limit).lean();
+}
+
+export async function searchProducts(parsedParams, limit = 20) {
+  const query = buildQuery(parsedParams);
+  if (!query) return [];
+
+  const hasText = !!(parsedParams.model_hint || parsedParams.brand_hint);
+  let results = await _runQuery(query, hasText, limit);
+  if (results.length > 0) return results;
+
+  // Fallback 1: убираем model_hint — помогает при опечатках или неточном названии модели
+  if (parsedParams.model_hint) {
+    const p2 = { ...parsedParams, model_hint: undefined };
+    const q2 = buildQuery(p2);
+    if (q2) {
+      results = await _runQuery(q2, !!p2.brand_hint, limit);
+      if (results.length > 0) return results;
+    }
+  }
+
+  // Fallback 2: убираем бренд тоже — ищем только по параметрам (тип, сила, цилиндр и т.д.)
+  if (parsedParams.brand_hint) {
+    const p3 = { ...parsedParams, model_hint: undefined, brand_hint: undefined };
+    const q3 = buildQuery(p3);
+    if (q3) results = await _runQuery(q3, false, limit);
+  }
+
+  return results;
 }
